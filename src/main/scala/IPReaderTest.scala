@@ -57,7 +57,7 @@ object IPReaderTest {
     val t0 = System.nanoTime
     val parsed: Iterator[Any] = allFilesIter.flatMap(parseFile)
 
-    var definitions = mutable.HashMap[ipxact.VersionedIdentifier, Any]()
+    var definitions = mutable.HashMap.empty[ipxact.VersionedIdentifier, Any]
 
     definitions ++= parsed.filter(_.isInstanceOf[ipxact.Versioned]).map(d => d.asInstanceOf[ipxact.Versioned].identifier -> d)
     val t1 = System.nanoTime
