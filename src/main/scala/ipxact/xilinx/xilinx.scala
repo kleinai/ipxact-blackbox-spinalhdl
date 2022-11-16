@@ -61,7 +61,7 @@ object ParameterAbstraction {
 case class NativeAxiMMAbstraction() extends AbstractionDefinitionI {
   override val identifier: VersionedIdentifier = VersionedIdentifier("spinal", "interface", "aximm", "1.0")
 
-  override def scalaInstance(origConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
+  override def scalaInstance(origConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val busAbsDefOption = definitions.get(VersionedIdentifier("xilinx.com", "interface.param", "aximm", "1.0"))
     val config = (origConfig ++ busAbsDefOption.flatMap {
       case busAbsDef: ParameterAbstractionDefinition => Some(busAbsDef.parameters.map { p =>
@@ -94,35 +94,67 @@ case class NativeAxiMMAbstraction() extends AbstractionDefinitionI {
           "useLen" -> "true"
         )
         val args = mapped.map { case (k, v) => s"$k = $v"}.mkString(", ")
-        Some(s"Axi4(Axi4Config($args))")
+        Some((s"Axi4(Axi4Config($args))",
+          Seq(
+            "spinal.lib.bus.amba4.axi.Axi4",
+            "spinal.lib.bus.amba4.axi.Axi4Config"
+          )
+        ))
       }
-      case "axi3" => {
-        Some("Axi3(Axi3Config())")
-      }
+      case "axi3" => ???
       case _ => None
     }
   }
-
-  override def scalaLibraries(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
 }
 
 case class NativeAxisAbstraction() extends AbstractionDefinitionI {
   override val identifier: VersionedIdentifier = VersionedIdentifier("spinal", "interface", "axis", "1.0")
 
-  override def scalaInstance(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
-    Some(s"Axi4Stream(Axi4StreamConfig())")
-  }
+  override def scalaInstance(origConfig: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+    val busAbsDefOption = definitions.get(VersionedIdentifier("xilinx.com", "interface.param", "axis", "1.0"))
+    val config = (origConfig ++ busAbsDefOption.flatMap {
+      case busAbsDef: ParameterAbstractionDefinition => Some(busAbsDef.parameters.map { p =>
+        p.logicalName -> p.default
+      }.filter(p => !origConfig.contains(p._1)).toMap)
+      case _ => None
+    }.getOrElse(Map.empty[String, String])).map { case (k, v) => k.toLowerCase -> v }
 
-  override def scalaLibraries(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
+    def mapBool(v: String) = if (v == "1") "true" else "false"
+
+    val mapped = config.flatMap { case (k, v) => k match {
+      case "tdata_num_bytes" => Some("dataWidth" -> v)
+      case "tdest_width" => Some("destWidth" -> v)
+      case "tid_width" => Some("idWidth" -> v)
+      case "tuser_width" => Some("userWidth" -> v)
+      case "has_tready" => if (v != "1") throw new Exception("HAS_TREADY=0 is not yet supported in native Axi4Stream translations") else None
+      case "has_tstrb" => Some("useStrb", mapBool(v))
+      case "has_tkeep" => Some("useKeep", mapBool(v))
+      case "has_tlast" => Some("useLast", mapBool(v))
+      case _ => None
+    }} ++ Map(
+      "useId" -> "true",
+      "useDest" -> "true",
+      "useUser" -> "true"
+    )
+    val args = mapped.map { case (k, v) => s"$k = $v" }.mkString(", ")
+    Some((s"Axi4Stream(Axi4StreamConfig($args))",
+      Seq(
+        "spinal.lib.bus.amba4.axis.Axi4Stream",
+        "spinal.lib.bus.amba4.axis.Axi4StreamConfig"
+      )
+    ))
+  }
 }
 
 case class GenericVectorAbstraction() extends AbstractionDefinitionI {
   override val identifier: VersionedIdentifier = VersionedIdentifier("spinal", "interface", "generic", "1.0")
 
-  override def scalaInstance(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
+  override def scalaInstance(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val width = config.find { case (k, v) => k.toLowerCase == "portwidth" }.map(_._2).getOrElse(0)
-    Some(s"Bits($width bit)")
+    Some((s"Bits($width bit)",
+      Seq(
+        "spinal.core.Bits"
+      )
+    ))
   }
-
-  override def scalaLibraries(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
 }

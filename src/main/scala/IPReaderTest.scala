@@ -88,7 +88,14 @@ object IPReaderTest {
       case design: ipxact.Design => Some(design)
       case _ => None
     }.head
-//    println(design)
-    println(design.componentInstances.head.scalaDefinition()(definitions).getOrElse("Oops nothing generated"))
+
+    for(inst <- design.componentInstances.head.makeFile(definitions)) {
+      println(inst)
+      val outFile = "build/xilinx/zynq_ultra_ps_e_0_0.scala".toFile
+      outFile.parent.createDirectory()
+      val writer = outFile.bufferedWriter()
+      writer.write(inst)
+      writer.close()
+    }
   }
 }

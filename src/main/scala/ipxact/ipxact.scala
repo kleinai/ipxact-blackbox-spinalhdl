@@ -19,19 +19,16 @@
 package ipxact
 
 import scala.collection.AbstractMap
+import scala.collection.mutable.ListBuffer
 import scala.language.implicitConversions
 import scala.xml.Node
 
 trait ScalaGenerator {
-  def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String]
-
-  def scalaLibraries(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String]
+  def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])]
 }
 
 trait ScalaDefinition {
-  def scalaDefinition(tabDepth: Int = 0, config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String]
-
-  def scalaLibraries(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String]
+  def scalaDefinition(tabDepth: Int = 0, config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])]
 }
 
 trait Versioned {
@@ -169,11 +166,9 @@ case class AbstractionDefinition(identifier: VersionedIdentifier,
                                  busType: LibraryRefType,
                                  extendsRefs: Seq[LibraryRefType],
                                  ports: Seq[AbstractionDefinitionPort]) extends AbstractionDefinitionI {
-  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
-    Some(s"${busType.name}()")
+  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+    Some(s"${busType.name}()", Seq.empty)
   }
-
-  def scalaLibraries(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
 }
 
 object AbstractionDefinition {
@@ -297,14 +292,14 @@ case class BusInterface(nameGroup: NameGroup,
                         portMaps: Seq[PortMap],
                         parameters: Seq[Parameter],
                         vendorExtensions: Seq[VendorExtension]) extends ScalaGenerator {
-  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
+  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val busAbsDef = definitions(abstractionType.get).asInstanceOf[AbstractionDefinitionI]
     interfaceMode match {
-      case _: Master => busAbsDef.scalaInstance(config).map(inst => s"master(${inst})")
-      case _: Slave => busAbsDef.scalaInstance(config).map(inst => s"slave(${inst})")
-      case _: MirroredMaster => busAbsDef.scalaInstance(config).map(inst => s"slave(${inst})")
-      case _: MirroredSlave => busAbsDef.scalaInstance(config).map(inst => s"master(${inst})")
-      case _: Monitor => busAbsDef.scalaInstance(config).map(inst => s"in(${inst})")
+      case _: Master => busAbsDef.scalaInstance(config).map {case (inst, libs) => (s"master(${inst})", libs)}
+      case _: Slave => busAbsDef.scalaInstance(config).map {case (inst, libs) => (s"slave(${inst})", libs)}
+      case _: MirroredMaster => busAbsDef.scalaInstance(config).map {case (inst, libs) => (s"slave(${inst})", libs)}
+      case _: MirroredSlave => busAbsDef.scalaInstance(config).map {case (inst, libs) => (s"master(${inst})", libs)}
+      case _: Monitor => busAbsDef.scalaInstance(config).map {case (inst, libs) => (s"in(${inst})", libs)}
       case _ => None
     }
   }
@@ -388,19 +383,20 @@ object ConfigurableElementValue {
 case class ComponentInstance(instanceName: String,
                              componentRef: LibraryRefType,
                              configurableElementValues: Seq[ConfigurableElementValue]) extends ScalaDefinition {
-  override def scalaDefinition(tabDepth: Int, funcConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[String] = {
+  override def scalaDefinition(tabDepth: Int, funcConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val config = configurableElementValues.map { e => e.referenceId -> e.value }.toMap ++ funcConfig
     val component = definitions.get(componentRef).map(_.asInstanceOf[Component]).orNull
-    val ports: Seq[String] = component.busInterfaces.flatMap { bus =>
+    val tabStr = " " * tabDepth
+    val ports: Seq[(String, Seq[String])] = component.busInterfaces.flatMap { bus =>
       val busConfig = config.filter { case (k, _) => k.toLowerCase.startsWith(s"BUSIFPARAM_VALUE.${bus.nameGroup.name}".toLowerCase) }
         .map { case (k, v) => k.split('.').drop(2).mkString(".") -> v }
-      bus.scalaInstance(busConfig).map(inst => s"     val ${bus.nameGroup.name} = ${inst}")
+      bus.scalaInstance(busConfig).map { case (inst, libs) =>
+        (s"${tabStr*2}val ${bus.nameGroup.name} = ${inst}", libs)
+      }
     }
-    Some((Seq(s"case class ${instanceName}() extends BlackBox {",
-      "  val io = new Bundle() {") ++ ports ++ Seq("  }", "}")).mkString("\r\n"))
+    Some(((Seq(s"case class ${instanceName}() extends BlackBox {",
+      s"${tabStr}val io = new Bundle() {") ++ ports.map(_._1) ++ Seq(s"${tabStr}}", "}")).mkString("\n"), ports.flatMap(_._2)))
   }
-
-  override def scalaLibraries(config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
 }
 
 object ComponentInstance {
@@ -410,6 +406,19 @@ object ComponentInstance {
       componentRef = (node \ "componentRef").map(n => LibraryRefType.parse(n)).head,
       configurableElementValues = (node \ "configurableElementValues" \ "configurableElementValue").map(n => ConfigurableElementValue.parse(n))
     )
+  }
+
+  implicit class ComponentInstanceRich(component: ComponentInstance) {
+    val COMMON_IMPORTS: Seq[String] = Seq(
+      "import spinal.core._",
+      "import spinal.lib._"
+    )
+    implicit def makeFile(definitions: AbstractMap[VersionedIdentifier, Any], tabDepth: Int = 2): Option[String] = {
+      component.scalaDefinition(tabDepth = tabDepth)(definitions).map { case (inst, libs) =>
+        val imports = libs.toSet[String].map(lib => s"import ${lib}")
+        (COMMON_IMPORTS ++ Seq("") ++ imports ++ Seq("", inst)).mkString("\n")
+      }
+    }
   }
 }
 
