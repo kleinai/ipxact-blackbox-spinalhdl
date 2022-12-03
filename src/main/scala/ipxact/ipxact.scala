@@ -177,7 +177,7 @@ object AbstractionDefinition {
       identifier = VersionedIdentifier.parse(node),
       busType = (node \ "busType").map(n => LibraryRefType.parse(n)).head,
       extendsRefs = (node \ "extends").map(n => LibraryRefType.parse(n)),
-      ports = (node \ "port" \ "ports").map(n => AbstractionDefinitionPort.parse(n))
+      ports = (node \ "ports" \ "port").map(n => AbstractionDefinitionPort.parse(n))
     )
   }
 }
