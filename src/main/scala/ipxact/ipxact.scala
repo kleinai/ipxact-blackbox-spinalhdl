@@ -343,8 +343,6 @@ case class BusInterface(nameGroup: NameGroup,
       case _ => None
     }
   }
-
-  def scalaLibraries(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Seq[String] = Seq.empty
 }
 
 object BusInterface {
@@ -425,17 +423,34 @@ case class ComponentInstance(instanceName: String,
                              configurableElementValues: Seq[ConfigurableElementValue]) extends ScalaDefinition {
   override def scalaDefinition(tabDepth: Int, funcConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val config = configurableElementValues.map { e => e.referenceId -> e.value }.toMap ++ funcConfig
-    val component = definitions.get(componentRef).map(_.asInstanceOf[Component]).orNull
-    val tabStr = " " * tabDepth
-    val ports: Seq[(String, Seq[String])] = component.busInterfaces.flatMap { bus =>
-      val busConfig = config.filter { case (k, _) => k.toLowerCase.startsWith(s"BUSIFPARAM_VALUE.${bus.nameGroup.name}".toLowerCase) }
-        .map { case (k, v) => k.split('.').drop(2).mkString(".") -> v }
-      bus.scalaInstance(busConfig).map { case (inst, libs) =>
-        (s"${tabStr*2}val ${bus.nameGroup.name} = ${inst}", libs)
+    definitions.get(componentRef).map(_.asInstanceOf[Component]).map { component =>
+      val requiredDefs = component.busInterfaces
+        .flatMap(_.abstractionType)
+        .distinct
+        .flatMap(ref => definitions.get(ref))
+        .filter(_.isInstanceOf[AbstractionDefinition])
+        .map(_.asInstanceOf[AbstractionDefinition])
+        .flatMap(_.scalaDefinition(tabDepth+2))
+
+      val tabStr = " " * tabDepth
+      val ports: Seq[(String, Seq[String])] = component.busInterfaces.flatMap { bus =>
+        val busConfig = config.filter { case (k, _) => k.toLowerCase.startsWith(s"BUSIFPARAM_VALUE.${bus.nameGroup.name}".toLowerCase) }
+          .map { case (k, v) => k.split('.').drop(2).mkString(".") -> v }
+        bus.scalaInstance(busConfig).map { case (inst, libs) =>
+          (s"${tabStr * 2}val ${bus.nameGroup.name} = ${inst}", libs)
+        }
       }
+
+      val includes = ports.flatMap(_._2) ++ requiredDefs.flatMap(_._2)
+      val defStrings = requiredDefs.map(_._1)
+      val thisDefString = (Seq(s"case class ${instanceName}() extends BlackBox {",
+        s"${tabStr}val io = new Bundle() {") ++ ports.map(_._1) ++ Seq(s"${tabStr}}", "}")
+      ).mkString("\n")
+
+      val fullDefString = (defStrings ++ Seq(thisDefString)).mkString("\n\n")
+
+      (fullDefString, includes)
     }
-    Some(((Seq(s"case class ${instanceName}() extends BlackBox {",
-      s"${tabStr}val io = new Bundle() {") ++ ports.map(_._1) ++ Seq(s"${tabStr}}", "}")).mkString("\n"), ports.flatMap(_._2)))
   }
 }
 
