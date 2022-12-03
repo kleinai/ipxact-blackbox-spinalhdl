@@ -105,6 +105,8 @@ case class NativeAxiMMAbstraction() extends AbstractionDefinitionI {
       case _ => None
     }
   }
+
+  override def scalaDefinition(tabDepth: Int, config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = None
 }
 
 case class NativeAxisAbstraction() extends AbstractionDefinitionI {
@@ -144,6 +146,8 @@ case class NativeAxisAbstraction() extends AbstractionDefinitionI {
       )
     ))
   }
+
+  override def scalaDefinition(tabDepth: Int, config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = None
 }
 
 case class GenericVectorAbstraction() extends AbstractionDefinitionI {
@@ -157,4 +161,6 @@ case class GenericVectorAbstraction() extends AbstractionDefinitionI {
       )
     ))
   }
+
+  override def scalaDefinition(tabDepth: Int, config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = None
 }

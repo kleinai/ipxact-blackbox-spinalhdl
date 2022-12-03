@@ -133,7 +133,16 @@ case class AbstractionDefinitionPort(logicalName: String,
                                      portStyle: PortStyle,
                                      onMaster: Option[AbstractionDefinitionWirePort],
                                      onSlave: Option[AbstractionDefinitionWirePort],
-                                     defaultValue: Option[BigInt])
+                                     defaultValue: Option[BigInt]) {
+  def asMaster(): Option[(WirePortDirection, Int)] = {
+    val dir = onMaster.map(_.direction).orElse(onSlave.map(_.direction.flip()))
+    val width = onMaster.flatMap(_.width).orElse(onSlave.flatMap(_.width))
+    if (dir.isDefined && width.isDefined)
+      Some((dir.get, width.get))
+    else
+      None
+  }
+}
 
 object AbstractionDefinitionPort {
   def parse(node: Node): AbstractionDefinitionPort = {
@@ -160,7 +169,7 @@ object AbstractionDefinitionPort {
   }
 }
 
-trait AbstractionDefinitionI extends Versioned with ScalaGenerator
+trait AbstractionDefinitionI extends Versioned with ScalaGenerator with ScalaDefinition
 
 case class AbstractionDefinition(identifier: VersionedIdentifier,
                                  busType: LibraryRefType,
@@ -168,6 +177,23 @@ case class AbstractionDefinition(identifier: VersionedIdentifier,
                                  ports: Seq[AbstractionDefinitionPort]) extends AbstractionDefinitionI {
   override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     Some(s"${busType.name}()", Seq.empty)
+  }
+
+  override def scalaDefinition(tabDepth: Int, config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+    val fullyDefinedPorts = ports.filter(_.asMaster().isDefined).toList
+    val valDefs: Seq[String] = fullyDefinedPorts.map(p => s"val ${p.logicalName} = Bits(${p.asMaster().get._2} bit)")
+    val valDirs: Seq[String] = fullyDefinedPorts.map(p => s"${p.asMaster().get._1.toString}(${p.logicalName})")
+    val tabStr = " " * tabDepth
+    val scalaDef = s"""
+       |case class ${busType.name}() extends Bundle with IMasterSlave {
+       |${valDefs.map(s => s"${tabStr}${s}").mkString("\n")}
+       |
+       |${tabStr}override def asMaster(): Unit = {
+       |${valDirs.map(s => s"${tabStr}${tabStr}${s}").mkString("\n")}
+       |${tabStr}}
+       |}
+       |""".stripMargin
+    Some(scalaDef, Seq())
   }
 }
 
