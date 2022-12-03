@@ -94,13 +94,27 @@ object Illegal extends Presence
 
 object Optional extends Presence
 
-trait WirePortDirection
+trait WirePortDirection {
+  def flip(): WirePortDirection
+}
 
-object In extends WirePortDirection
+object In extends WirePortDirection {
+  def flip() = `Out`
 
-object Out extends WirePortDirection
+  override def toString: String = "in"
+}
 
-object InOut extends WirePortDirection
+object Out extends WirePortDirection {
+  def flip() = `In`
+
+  override def toString: String = "out"
+}
+
+object InOut extends WirePortDirection {
+  def flip() = `InOut`
+
+  override def toString: String = "inout"
+}
 
 case class AbstractionDefinitionWirePort(presence: Presence,
                                          width: Option[Int],
@@ -162,9 +176,9 @@ object AbstractionDefinitionPort {
         case "transactional" => Some(`Transactional`)
         case _ => None
       }).headOption.get,
-      onMaster = (node \ "onMaster").map(n => AbstractionDefinitionWirePort.parse(n)).headOption,
-      onSlave = (node \ "onSlave").map(n => AbstractionDefinitionWirePort.parse(n)).headOption,
-      defaultValue = (node \ "defaultValue").map(n => BigInt(n.text)).headOption
+      onMaster = (node \ "wire" \ "onMaster").map(n => AbstractionDefinitionWirePort.parse(n)).headOption,
+      onSlave = (node \ "wire" \ "onSlave").map(n => AbstractionDefinitionWirePort.parse(n)).headOption,
+      defaultValue = (node \ "wire" \ "defaultValue").map(n => BigInt(n.text)).headOption
     )
   }
 }
