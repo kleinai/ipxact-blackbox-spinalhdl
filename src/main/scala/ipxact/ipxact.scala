@@ -18,18 +18,15 @@
 
 package ipxact
 
-import scala.collection.AbstractMap
 import scala.collection.mutable.ListBuffer
+import scala.collection.{AbstractMap, mutable}
 import scala.language.implicitConversions
 import scala.xml.Node
 
-trait ScalaGenerator {
-  def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])]
+package object ipxact {
+  type DefinitionsMap = AbstractMap[VersionedIdentifier, Any]
 }
 
-trait ScalaDefinition {
-  def scalaDefinition(tabDepth: Int = 0, config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])]
-}
 
 trait Versioned {
   val identifier: VersionedIdentifier
@@ -49,6 +46,15 @@ object VersionedIdentifier {
       version = (node \ "version").text
     )
   }
+}
+
+
+trait ScalaGenerator {
+  def scalaInstance(config: Map[String, String] = Map())(implicit definitions: ipxact.DefinitionsMap): Option[(String, Seq[String])]
+}
+
+trait ScalaDefinition {
+  def scalaDefinition(tabDepth: Int = 0)(implicit definitions: ipxact.DefinitionsMap): Option[(String, Seq[String])]
 }
 
 case class LibraryRefType(vendor: String,
@@ -148,11 +154,11 @@ case class AbstractionDefinitionPort(logicalName: String,
                                      onMaster: Option[AbstractionDefinitionWirePort],
                                      onSlave: Option[AbstractionDefinitionWirePort],
                                      defaultValue: Option[BigInt]) {
-  def asMaster(): Option[(WirePortDirection, Int)] = {
+  def asMaster(): Option[(WirePortDirection, Option[Int])] = {
     val dir = onMaster.map(_.direction).orElse(onSlave.map(_.direction.flip()))
     val width = onMaster.flatMap(_.width).orElse(onSlave.flatMap(_.width))
-    if (dir.isDefined && width.isDefined)
-      Some((dir.get, width.get))
+    if (dir.isDefined)
+      Some(dir.get, width)
     else
       None
   }
@@ -183,30 +189,47 @@ object AbstractionDefinitionPort {
   }
 }
 
-trait AbstractionDefinitionI extends Versioned with ScalaGenerator with ScalaDefinition
+trait AbstractionDefinitionI extends Versioned with ScalaGenerator {
+  def scalaDefinition(tabDepth: Int)(implicit definitions: ipxact.DefinitionsMap): Option[(String, Seq[String])]
+}
 
 case class AbstractionDefinition(identifier: VersionedIdentifier,
                                  busType: LibraryRefType,
                                  extendsRefs: Seq[LibraryRefType],
                                  ports: Seq[AbstractionDefinitionPort]) extends AbstractionDefinitionI {
-  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+  override def scalaInstance(config: Map[String, String] = Map())(implicit definitions: ipxact.DefinitionsMap): Option[(String, Seq[String])] = {
     Some(s"${busType.name}()", Seq.empty)
   }
 
-  override def scalaDefinition(tabDepth: Int, config: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
-    val fullyDefinedPorts = ports.filter(_.asMaster().isDefined).toList
-    val valDefs: Seq[String] = fullyDefinedPorts.map(p => s"val ${p.logicalName} = Bits(${p.asMaster().get._2} bit)")
-    val valDirs: Seq[String] = fullyDefinedPorts.map(p => s"${p.asMaster().get._1.toString}(${p.logicalName})")
+  private def camelCase(name: String): String = {
+    val spl = name.toLowerCase.split("_")
+    spl.head + spl.tail.map(_.capitalize).mkString("")
+  }
+
+  def scalaDefinition(tabDepth: Int)(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+    val definedPorts = ports.filter(_.asMaster().isDefined).toList
+    val valDefs = ListBuffer[String]()
+    val paramNames = ListBuffer[String]()
+    for (port <- definedPorts) port.asMaster() match {
+      case Some((_, Some(width))) => valDefs += s"val ${port.logicalName} = Bits(${width} bit)"
+      case Some((_, None)) =>
+        val paramName = camelCase(port.logicalName) + "Width"
+        valDefs += s"val ${port.logicalName} = Bits(${paramName} bit)"
+        paramNames += paramName
+      case _ => // Not possible
+    }
+    val dirStatements = definedPorts.groupMap(_.asMaster().get._1)(_.logicalName)
+      .map({case (dir, sigs) => s"${dir}(${sigs.mkString(", ")})"})
     val tabStr = " " * tabDepth
     val scalaDef = s"""
-       |case class ${busType.name}() extends Bundle with IMasterSlave {
-       |${valDefs.map(s => s"${tabStr}${s}").mkString("\n")}
-       |
-       |${tabStr}override def asMaster(): Unit = {
-       |${valDirs.map(s => s"${tabStr}${tabStr}${s}").mkString("\n")}
-       |${tabStr}}
-       |}
-       |""".stripMargin
+      |case class ${busType.name}(${paramNames.map(param => s"${param}: Int").mkString(", ")}) extends Bundle with IMasterSlave {
+      |${valDefs.map(s => s"${tabStr}${s}").mkString("\n")}
+      |
+      |${tabStr}override def asMaster(): Unit = {
+      |${dirStatements.map(s => s"${tabStr}${tabStr}$s").mkString("\n")}
+      |${tabStr}}
+      |}
+      |""".stripMargin
     Some(scalaDef, Seq())
   }
 }
@@ -421,7 +444,39 @@ object ConfigurableElementValue {
 case class ComponentInstance(instanceName: String,
                              componentRef: LibraryRefType,
                              configurableElementValues: Seq[ConfigurableElementValue]) extends ScalaDefinition {
-  override def scalaDefinition(tabDepth: Int, funcConfig: Map[String, String] = Map())(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+  def scalaDefinition(tabDepth: Int = 0)(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
+    val config = configurableElementValues.map { e => e.referenceId -> e.value }.toMap
+    definitions.get(componentRef).map(_.asInstanceOf[Component]).map { component =>
+      val requiredDefs = component.busInterfaces
+        .flatMap(_.abstractionType)
+        .distinct
+        .flatMap(ref => definitions.get(ref))
+        .filter(_.isInstanceOf[AbstractionDefinition])
+        .map(_.asInstanceOf[AbstractionDefinition])
+        .flatMap(_.scalaDefinition(tabDepth + 2))
+
+      val tabStr = " " * tabDepth
+      val ports: Seq[(String, Seq[String])] = component.busInterfaces.flatMap { bus =>
+        val busConfig = config.filter { case (k, _) => k.toLowerCase.startsWith(s"BUSIFPARAM_VALUE.${bus.nameGroup.name}".toLowerCase) }
+          .map { case (k, v) => k.split('.').drop(2).mkString(".") -> v }
+        bus.scalaInstance(busConfig).map { case (inst, libs) =>
+          (s"${tabStr * 2}val ${bus.nameGroup.name} = ${inst}", libs)
+        }
+      }
+
+      val includes = ports.flatMap(_._2) ++ requiredDefs.flatMap(_._2)
+      val defStrings = requiredDefs.map(_._1)
+      val thisDefString = (Seq(s"case class ${instanceName}() extends BlackBox {",
+        s"${tabStr}val io = new Bundle() {") ++ ports.map(_._1) ++ Seq(s"${tabStr}}", "}")
+        ).mkString("\n")
+
+      val fullDefString = (defStrings ++ Seq(thisDefString)).mkString("\n\n")
+
+      (fullDefString, includes)
+    }
+  }
+
+  def scalaDefinition(tabDepth: Int, funcConfig: Map[String, String])(implicit definitions: AbstractMap[VersionedIdentifier, Any]): Option[(String, Seq[String])] = {
     val config = configurableElementValues.map { e => e.referenceId -> e.value }.toMap ++ funcConfig
     definitions.get(componentRef).map(_.asInstanceOf[Component]).map { component =>
       val requiredDefs = component.busInterfaces
@@ -464,7 +519,7 @@ object ComponentInstance {
   }
 
   implicit class ComponentInstanceRich(component: ComponentInstance) {
-    val COMMON_IMPORTS: Seq[String] = Seq(
+    private def COMMON_IMPORTS: Seq[String] = Seq(
       "import spinal.core._",
       "import spinal.lib._"
     )
